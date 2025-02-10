@@ -1,5 +1,5 @@
 (** ML IMPLEMENTATION OF TYPED LAMBDA-CALCULUS **)
-(* Based on Chapter 10 of TAPL. *)
+(* Based on Chapters 10 and 11 of TAPL. *)
 
 
 (** Structure of simple types. *)
@@ -8,7 +8,6 @@ type s_ty =
   | TyArr of s_ty * s_ty
   | TyProd of s_ty * s_ty
   | TySum of s_ty * s_ty
-(* | TySum of s_ty * s_ty *)
 (* In the book, the chosen base type is Bool, but maybe we could view it as a parameter ? Or consider a Set of base types ? *)
 
 (** Typing contexts> *)
@@ -31,38 +30,44 @@ let rec get_type (ctx : var_ctx) (i : int) : s_ty =
   | _, _ -> raise VarNotTyped
 
 (** Inductive structure of terms. *)
-(* Based on 5.1, with added constructors. *)
+(* Based on 5.1, with additional constructors. *)
 type value =
   | ValVar of int
-  | ValAbs of s_ty * comp (* Adding the type of the bound variable. *)
+  | ValAbs of s_ty * comp (* Binds one variable. *)
   | ValPair of value * value
-  | ValInL of value * s_ty (* Tagged value - left. *)
-  | ValInR of s_ty * value (* Tagged vaule - right. *)
+  | ValInL of value * s_ty
+  | ValInR of s_ty * value 
 and comp =
   | CompApp of value * value
   | CompProj1 of value
   | CompProj2 of value
-  | CompInL of comp * s_ty (* Tagged computation - left. *)
-  | CompInR of s_ty * comp (*Tagged computation - right. *)
-  | CompCaseOf of value * value * comp * value * comp
+  | CompCaseOf of value * s_ty * comp * s_ty * comp (* Binds two variables. *)
   | CompReturn of value
 
 
-(** Typing. WIP *)
+(** Exceptions for typing and evaluation. *)
 
-(* Exception to raise when the types do not match
+(* Typing - Exception to raise when the types do not match
    in an application (CompApp). *)
 exception TypeMismatch
 
-(* Exception to raise when the first term of an application
+(* Typing - Exception to raise when the first term of an application
    (CompApp) does not have an arrow type as expected. *)
 exception NotAnArrow
 
-(* Exception to raise when the type of a product is not
-   a product type. *)
+(* Typing - Exception to raise when a projection (CompProj1/2)
+   is applied to a value whose type is not a product. *)
 exception NotAProduct
+
+(* Typing - Exception to raise when a case computation (CompCaseOf)
+   is applied to a value whose type is not a sum. *)
 exception NotASum
-exception IllAppliedCaseOf
+
+(* Evaluation - Exception to raise when no rule applies. *)
+exception NoRuleApplies
+
+
+(** Typing. *)
 
 let rec type_of_value (ctx : var_ctx) (v : value) : s_ty  =
   match v with
@@ -103,15 +108,7 @@ and type_of_comp (ctx : var_ctx) (t : comp) : s_ty =
      | TyProd (ty1, ty2) -> ty2
      | _ -> raise NotAProduct
      end
-  | CompInL (tL, tyR) ->
-     let tyL = type_of_comp ctx tL in
-     TySum (tyL, tyR)
-  | CompInR (tyL, tR) ->
-     let tyR = type_of_comp ctx tR in
-     TySum (tyL, tyR)
-  | CompCaseOf (v, vL, tL, vR, tR) ->
-     let ty_vL = type_of_value ctx vL in
-     let ty_vR = type_of_value ctx vR in
+  | CompCaseOf (v, ty_vL, tL, ty_vR, tR) ->
      let ty = type_of_value ctx v in
      begin if (ty = TySum (ty_vL, ty_vR))
            then
@@ -119,7 +116,7 @@ and type_of_comp (ctx : var_ctx) (t : comp) : s_ty =
              let tyL = type_of_comp ctx' tL in
              let tyR = type_of_comp ctx' tR in
              TySum (tyL, tyR)
-           else raise IllAppliedCaseOf
+           else raise NotASum
      end 
   | CompReturn v -> type_of_value ctx v
   
@@ -143,10 +140,8 @@ and shift_comp_aux (d : int) (t : comp) (c : int) =
     | CompApp (u, v) -> CompApp ((shift_aux d u c), (shift_aux d v c))
     | CompProj1 v -> CompProj1 (shift_aux d v c)
     | CompProj2 v -> CompProj2 (shift_aux d v c)
-    | CompInL (tL, tyR) -> CompInL (shift_comp_aux d tL c, tyR)
-    | CompInR (tyL, tR) -> CompInR (tyL, shift_comp_aux d tR c)
-    | CompCaseOf (v, vL, tL, vR, tR) ->
-       CompCaseOf ((shift_aux d v c), (shift_aux d vL c), (shift_comp_aux d tL c), (shift_aux d vR c), (shift_comp_aux d tR c))
+    | CompCaseOf (v, ty_vL, tL, ty_vR, tR) ->
+       CompCaseOf ((shift_aux d v c), ty_vL, (shift_comp_aux d tL (c+1)), ty_vR, (shift_comp_aux d tR (c+1)))
     | CompReturn t' -> CompReturn (shift_aux d t' c)
 
 let shift (t : value) (d : int) : value =
@@ -175,10 +170,10 @@ and  subst (t: comp) (j : int) (s : value) : comp =
   | CompApp (u, v) -> CompApp ((subst_value u j s), (subst_value v j s))
   | CompProj1 t' -> CompProj1 (subst_value t' j s)
   | CompProj2 t' -> CompProj2 (subst_value t' j s)
-  | CompInL (tL, tyR) -> CompInL (subst tL j s, tyR)
-  | CompInR (tyL, tR) -> CompInR (tyL, subst tR j s)
-  | CompCaseOf (v, vL, tL, vR, tR) ->
-     CompCaseOf (subst_value v j s, subst_value vL j s, subst tL j s, subst_value vR j s, subst tR j s)
+  | CompCaseOf (v, ty_vL, tL, ty_vR, tR) ->
+     CompCaseOf (subst_value v j s,
+                 ty_vL, subst tL (j+1) (shift s 1),
+                 ty_vR, subst tR (j+1) (shift s 1))
   | CompReturn t' -> CompReturn (subst_value t' j s)
 
 
@@ -189,17 +184,6 @@ let head_subst t v =
 let t' =  subst t 0 (shift v 1) in
      (shift_comp t' (-1))
 
-(* Exception to rise when the term is not a value as expected. *)
-exception NotAValue
-
-(* Exception to rise when the term is not a value as expected. *)
-exception IllAppliedProjection
-
-(* Exception to rise when no rule applies. *)
-exception NoRuleApplies
-
-
-
 (** Evaluation. WIP *)
 (* a. Single step. *)
 let rec eval_1step (t : comp) =
@@ -208,12 +192,11 @@ let rec eval_1step (t : comp) =
      head_subst t1 v2
   | CompProj1 (ValPair (v1, v2)) -> CompReturn v1
   | CompProj2 (ValPair (v1, v2)) -> CompReturn v2
-  | CompCaseOf (ValInL (v0, tyR), ValInL (ValVar kL, tyLR), tL, ValInR (tyLL, ValVar kR), tR) ->
-     subst tL kL v0
-  | CompCaseOf (ValInR (tyL, v0), ValInL (ValVar kL, tyRR), tL, ValInR (tyRL, ValVar kR), tR) ->
-    subst tR kR v0
+  | CompCaseOf (ValInL (v0, tyR), ty_vL, tL, ty_vR, tR) ->
+     head_subst tL v0
+  | CompCaseOf (ValInR (tyL, v0), ty_vL, tL, ty_vR, tR) ->
+    head_subst tR  v0
   | _ -> raise NoRuleApplies
-
 
 
 (* b. Multi-step.*)
