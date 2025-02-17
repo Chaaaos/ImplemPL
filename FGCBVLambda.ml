@@ -42,13 +42,14 @@ and comp =
   | CompProj1 of value
   | CompProj2 of value
   | CompCaseOf of value * s_ty * comp * s_ty * comp (* Binds two variables. *)
+  | CompLet of comp * comp
   | CompReturn of value
 
 
 (** Exceptions for typing and evaluation. *)
 
 (* Typing - Exception to raise when the types do not match
-   in an application (CompApp). *)
+   in an application (CompApp) or when deconstructing a sum. *)
 exception TypeMismatch
 
 (* Typing - Exception to raise when the first term of an application
@@ -115,9 +116,13 @@ and type_of_comp (ctx : var_ctx) (t : comp) : s_ty =
              let ctx' = add_type ty ctx in
              let tyL = type_of_comp ctx' tL in
              let tyR = type_of_comp ctx' tR in
-             TySum (tyL, tyR)
+             if (tyL = tyR) then tyL else raise TypeMismatch
            else raise NotASum
-     end 
+     end
+  | CompLet (t1, t2) ->
+     let ty1 = type_of_comp ctx t1 in
+     let ctx' = add_type ty1 ctx in
+     (type_of_comp ctx' t2)
   | CompReturn v -> type_of_value ctx v
   
 
@@ -142,6 +147,7 @@ and shift_comp_aux (d : int) (t : comp) (c : int) =
     | CompProj2 v -> CompProj2 (shift_aux d v c)
     | CompCaseOf (v, ty_vL, tL, ty_vR, tR) ->
        CompCaseOf ((shift_aux d v c), ty_vL, (shift_comp_aux d tL (c+1)), ty_vR, (shift_comp_aux d tR (c+1)))
+    | CompLet (t1, t2) -> CompLet ((shift_comp_aux d t1 c), (shift_comp_aux d t2 (c+1)))
     | CompReturn t' -> CompReturn (shift_aux d t' c)
 
 let shift (t : value) (d : int) : value =
@@ -174,6 +180,7 @@ and  subst (t: comp) (j : int) (s : value) : comp =
      CompCaseOf (subst_value v j s,
                  ty_vL, subst tL (j+1) (shift s 1),
                  ty_vR, subst tR (j+1) (shift s 1))
+  | CompLet (t1, t2) -> CompLet ((subst t1 j s), (subst t2 (j+1) (shift s 1)))
   | CompReturn t' -> CompReturn (subst_value t' j s)
 
 
@@ -195,7 +202,9 @@ let rec eval_1step (t : comp) =
   | CompCaseOf (ValInL (v0, tyR), ty_vL, tL, ty_vR, tR) ->
      head_subst tL v0
   | CompCaseOf (ValInR (tyL, v0), ty_vL, tL, ty_vR, tR) ->
-    head_subst tR  v0
+     head_subst tR  v0
+  | CompLet (CompReturn(v1), t2) ->
+     head_subst t2 v1
   | _ -> raise NoRuleApplies
 
 

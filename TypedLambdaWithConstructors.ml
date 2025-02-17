@@ -1,5 +1,5 @@
 (** ML IMPLEMENTATION OF TYPED LAMBDA-CALCULUS **)
-(* Based on Chapter 10 of TAPL. *)
+(* Based on Chaptesr 10 and 11 of TAPL. *)
 
 
 (** Structure of simple types. *)
@@ -7,7 +7,7 @@ type s_ty =
   | TyBool
   | TyArr of s_ty * s_ty
   | TyProd of s_ty * s_ty
-(* | TySum of s_ty * s_ty *)
+  | TySum of s_ty * s_ty
 (* In the book, the chosen base type is Bool, but maybe we could view it as a parameter ? Or consider a Set of base types ? *)
 
 (** Typing contexts> *)
@@ -33,27 +33,41 @@ let rec get_type (ctx : var_ctx) (i : int) : s_ty =
 (* Based on 5.1. *)
 type term =
   | TmVar of int
-  | TmAbs of s_ty * term (* Adding the type of the bound variable. *)
+  | TmAbs of s_ty * term (* Binds one variable. *)
   | TmApp of term * term
   | TmPair of term * term
   | TmProj1 of term
   | TmProj2 of term
-(* | TmSum of term * term *)
+  | TmInL of term * s_ty
+  | TmInR of s_ty * term
+  | TmCaseOf of term * s_ty * term * s_ty * term (* Binds two variables. *)
+  | TmLet of term * term (* Binds one variable. *)
+
 
 
 (** Typing. WIP *)
 
-(* Exception to raise when the types do not match
-   in an application (TmApp). *)
+(** Exceptions for typing and evaluation. *)
+
+(* Typing - Exception to raise when the types do not match
+   in an application (CompApp) or when deconstructing a sum. *)
 exception TypeMismatch
 
-(* Exception to raise when the first term of an application
-   (TmApp) does not have an arrow type as expected. *)
+(* Typing - Exception to raise when the first term of an application
+   (CompApp) does not have an arrow type as expected. *)
 exception NotAnArrow
 
-(* Exception to raise when the type of a product is not
-   a product type. *)
+(* Typing - Exception to raise when a projection (CompProj1/2)
+   is applied to a value whose type is not a product. *)
 exception NotAProduct
+
+(* Typing - Exception to raise when a case computation (CompCaseOf)
+   is applied to a value whose type is not a sum. *)
+exception NotASum
+
+(* Evaluation - Exception to raise when no rule applies. *)
+exception NoRuleApplies
+
 
 
 let rec type_of (ctx : var_ctx) (t : term) : s_ty  =
@@ -87,7 +101,26 @@ let rec type_of (ctx : var_ctx) (t : term) : s_ty  =
      | TyProd (t1, t2) -> t2
      | _ -> raise NotAProduct
      end
-
+  | TmInL (vL, tyR) ->
+     let tyL =  type_of ctx vL in
+     TySum (tyL, tyR)
+  | TmInR (tyL, vR) ->
+     let tyR =  type_of ctx vR in
+     TySum (tyL, tyR) 
+  | TmCaseOf (v, ty_vL, tL, ty_vR, tR) ->
+     let ty = type_of ctx v in
+     begin if (ty = TySum (ty_vL, ty_vR))
+           then
+             let ctx' = add_type ty ctx in
+             let tyL = type_of ctx' tL in
+             let tyR = type_of ctx' tR in
+             if (tyL = tyR) then tyL else raise TypeMismatch
+           else raise NotASum
+     end
+  | TmLet (t1, t2) ->
+     let ty1 = type_of ctx t1 in
+     let ctx' = add_type ty1 ctx in
+     (type_of ctx' t2)
 
 
 
@@ -104,6 +137,15 @@ let shift (t : term) (d : int) : term =
     | TmPair (t1, t2) -> TmPair ((shift_aux t1 c), (shift_aux t2 c))
     | TmProj1 t' -> TmProj1 (shift_aux t' c)
     | TmProj2 t' -> TmProj2 (shift_aux t' c)
+    | TmInL (vL, tyR) -> TmInL (shift_aux vL c, tyR)
+    | TmInR (tyL, vR) -> TmInR (tyL, shift_aux vR c)
+    | TmCaseOf (v, ty_vL, tL, ty_vR, tR) ->
+       TmCaseOf ((shift_aux v c),
+                 ty_vL, (shift_aux tL (c+1)),
+                 ty_vR, (shift_aux tR (c+1)))
+    | TmLet (t1, t2) ->
+       TmLet ((shift_aux t1 c), (shift_aux t2 (c+1)))
+
   in
   shift_aux t 0
 
@@ -124,6 +166,15 @@ let rec subst (t: term) (j : int) (s : term) : term =
   | TmPair (t1, t2) -> TmPair ((subst t1 j s), (subst t2 j s))
   | TmProj1 t' -> TmProj1 (subst t' j s)
   | TmProj2 t' -> TmProj2 (subst t' j s)
+  | TmInL (vL, tyR) -> TmInL (subst vL j s, tyR)
+  | TmInR (tyL, vR) -> TmInR(tyL, subst vR j s)
+  | TmCaseOf (v, ty_vL, tL, ty_vR, tR) ->
+     TmCaseOf (subst v j s,
+                 ty_vL, subst tL (j+1) (shift s 1),
+                 ty_vR, subst tR (j+1) (shift s 1))
+  | TmLet (t1, t2) ->
+     TmLet ((subst t1 j s), (subst t2 (j+1) (shift s 1)))
+
 
 
 (** Prerequisites for evaluation. *)
@@ -182,8 +233,13 @@ let rec eval_1step (t : term) =
   | TmPair (t1, t2) ->
      let t1' = eval_1step t1 in
      TmPair (t1', t2)
+  | TmCaseOf (TmInL (v0, tyR), ty_vL, tL, ty_vR, tR)
+       when (is_val v0) -> head_subst tL v0
+  | TmCaseOf (TmInR (tyL, v0), ty_vL, tL, ty_vR, tR)
+       when (is_val v0) -> head_subst tR  v0
+  | TmLet (v0, t)
+       when (is_val v0) -> head_subst t v0
   | _ -> raise NoRuleApplies
-
 
 
 (* b. Multi-step.*)
