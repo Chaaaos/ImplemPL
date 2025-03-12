@@ -1,13 +1,13 @@
 (** ML IMPLEMENTATION OF TYPED LAMBDA-CALCULUS **)
-(* Based on Chapter 10 of TAPL. *)
+(* Based on the "Bidirectionnal Typing",
+   Dunfield & Krishnaswami 2020. *)
 
 
 (** Structure of simple types. *)
 type s_ty =
   | TyUnit
-  | TyBool
   | TyArr of s_ty * s_ty
-(* In the book, the chosen base type is Bool, but maybe we could view it as a parameter ? Or consider a Set of base types ? *)
+
 
 (** Typing contexts> *)
 type var_ctx = s_ty list
@@ -28,8 +28,8 @@ let rec get_type (ctx : var_ctx) (i : int) : s_ty =
   | j, (ty :: ctx') when (j > 0) -> (get_type ctx' (j-1))
   | _, _ -> raise VarNotTyped
 
+
 (** Inductive structure of terms. *)
-(* Based on 5.1. *)
 type term =
   | TmUnit (* Added for bidirectionalisation. *)
   | TmVar of int
@@ -38,46 +38,56 @@ type term =
   | TmApp of term * term
 
 
-(** Typing. WIP *)
+(** Bidirectional Typing. *)
 
-(* Exception to raise when the types do not match
-   in an application (TmApp). *)
-exception TypeMismatch
-(* Exception to raise when the first term of an application
-   (TmApp) does not have an arrow type as expected. *)
-exception NotAnArrow
-
-(* Exceptions to raise when it is impossible to synthetise
-   (resp. check) a type. *)
+(* Exceptions to raise when it is impossible
+   to synthetise a type. *)
 exception NotSynthetising
+(* Exceptions to raise when it is impossible
+   to check against a type. *)
 exception NotChecking
 
-
-let rec type_check (ctx : var_ctx) (t : term) (ty : s_ty) : bool  =
-  match t, ty with
-  (* unit <= *)
-  | TmUnit, TyUnit -> true  
+(* Mutually defined type checking & type synthetising functions. *)
+let rec type_check (ctx : var_ctx) (tm : term) (ty : s_ty) : unit  =
+  (* Subsubmption as an auxiliary function for checking. *)
+  let aux_subs (ctx : var_ctx) (tm : term) (ty : s_ty) : unit  =
+    try
+      let ty_syn = type_synth ctx tm in
+      assert (ty_syn = ty)
+    with fail -> raise NotChecking in
+  
+ match tm, ty with
+    (* unit <= *)
+    | TmUnit, TyUnit -> ()
     (* ->i <= *)
-  | TmAbs (ty, tm), TyArr(ty', ty_body) ->
-     let ctx' = add_type ty ctx in
-     let ty_tm = type_synth ctx' tm in
-     (ty_body = ty_tm) && (ty = ty')
-  | _ -> false
+    | TmAbs (ty_x, e), TyArr(ty_dom, ty_cod) ->
+       begin try
+         begin
+           assert (ty_x = ty_dom) ;
+           let ctx' = add_type ty_x ctx in
+           let ty_e = type_synth ctx' e in
+           assert (ty_e = ty_cod)
+         end
+         with fail -> (aux_subs ctx tm ty)
+       end
+    (* I should replace `_, _` in the next line.
+       (I think it should include all term constructors.) *)
+    | _, _ ->   (aux_subs ctx tm ty)
+
 and type_synth (ctx : var_ctx) (t : term) : s_ty  =
   match t with
     (* Var => *)
   | TmVar i -> get_type ctx i
     (* Anno => *)
-  | TmAnnot (tm, ty) -> ty
+  | TmAnnot (tm, ty) ->
+     (type_check ctx tm ty) ; ty
     (* ->e => *)
   | TmApp (t1, t2) ->
      let ty_t1 =  type_synth ctx t1 in
      begin match ty_t1 with
      | TyArr(tyA,tyB) ->
-        if (type_check ctx t2 tyA)
-           then tyB
-        else raise TypeMismatch
-     | _ -> raise NotAnArrow
+        (type_check ctx t2 tyA) ; tyB
+     | _ -> raise NotSynthetising
      end
   | TmUnit -> raise NotSynthetising
   | TmAbs (ty, tm) -> raise NotSynthetising
@@ -101,8 +111,7 @@ let shift (t : term) (d : int) : term =
   shift_aux t 0
 
 
-(** Substitution. WIP *) 
-(* Based on Definition 6.2.4. *)
+(** Substitution. WIP *)
 (* Same as in the untyped version.
    Relies on the fact that we should always substitute with
    terms whose type match the one of the variable they replace. *)
@@ -131,7 +140,6 @@ let t' =  subst t 0 (shift v 1) in
 
 (* Exception to rise when the term is not a value as expected. *)
 exception NotAValue
-
 (* Exception to rise when no rule applies. *)
 exception NoRuleApplies
 
