@@ -13,7 +13,7 @@ type s_ty =
 type var_ctx = s_ty list
 
 (* Adds the typing information for a new variable
- in head position. *)
+   in head position. *)
 let add_type (ty : s_ty) (ctx : var_ctx) = (ty :: ctx)
 
 (* Execption to rise when a variable
@@ -21,7 +21,7 @@ let add_type (ty : s_ty) (ctx : var_ctx) = (ty :: ctx)
 exception VarNotTyped
 
 (* Given a typing context and a De Bruijn index,
- returns the type of the corresponding variable when it exists.*)
+   returns the type of the corresponding variable when it exists.*)
 let rec get_type (ctx : var_ctx) (i : int) : s_ty =
   match i, ctx with
   | 0, [ty] -> ty
@@ -46,6 +46,9 @@ exception NotSynthetising
 (* Exceptions to raise when it is impossible
    to check against a type. *)
 exception NotChecking
+(* Exceptions to raise when syntax directed checking
+   failed, but subsumption could work. *)
+exception TrySubsumption
 
 (* Mutually defined type checking & type synthetising functions. *)
 let rec type_check (ctx : var_ctx) (tm : term) (ty : s_ty) : unit  =
@@ -55,33 +58,28 @@ let rec type_check (ctx : var_ctx) (tm : term) (ty : s_ty) : unit  =
       let ty_syn = type_synth ctx tm in
       assert (ty_syn = ty)
     with fail -> raise NotChecking in
-  
- match tm, ty with
-    (* unit <= *)
-    | TmUnit, TyUnit -> ()
-    (* ->i <= *)
-    | TmAbs (ty_x, e), TyArr(ty_dom, ty_cod) ->
-       begin try
-         begin
-           assert (ty_x = ty_dom) ;
-           let ctx' = add_type ty_x ctx in
-           let ty_e = type_synth ctx' e in
-           assert (ty_e = ty_cod)
-         end
-         with fail -> (aux_subs ctx tm ty)
-       end
-    (* I should replace `_, _` in the next line.
-       (I think it should include all term constructors.) *)
-    | _, _ ->   (aux_subs ctx tm ty)
-
+  begin try
+      match tm, ty with
+      (* unit <= *)
+      | TmUnit, TyUnit -> ()
+      (* ->i <= *)
+      | TmAbs (tx, e), TyArr(ty_x, ty_e) ->
+         if (tx = ty_x) ;
+         then let ctx' = add_type ty_x ctx in
+              type_check ctx' e ty_e
+         else raise NotChecking
+      | _, _ -> raise TrySubsumption
+                      (* replace with missing patterns *) 
+    with TrySubsumption -> (aux_subs ctx tm ty)
+  end
 and type_synth (ctx : var_ctx) (t : term) : s_ty  =
   match t with
-    (* Var => *)
+  (* Var => *)
   | TmVar i -> get_type ctx i
-    (* Anno => *)
+  (* Anno => *)
   | TmAnnot (tm, ty) ->
      (type_check ctx tm ty) ; ty
-    (* ->e => *)
+  (* ->e => *)
   | TmApp (t1, t2) ->
      let ty_t1 =  type_synth ctx t1 in
      begin match ty_t1 with
@@ -135,8 +133,8 @@ let rec isval (t : term) =
   | TmAbs _ -> true
   | _ -> false
 let head_subst t v =
-let t' =  subst t 0 (shift v 1) in
-     (shift t' (-1))
+  let t' =  subst t 0 (shift v 1) in
+  (shift t' (-1))
 
 (* Exception to rise when the term is not a value as expected. *)
 exception NotAValue
@@ -145,7 +143,7 @@ exception NoRuleApplies
 
 
 
-(** Evaluation. WIP *)
+(** Evaluation.  *)
 (* a. Single step. *)
 let rec eval_1step (t : term) =
   match t with
@@ -163,4 +161,4 @@ let rec eval_mstep (t : term) =
       (eval_mstep u)
   with NoRuleApplies -> t
 
-(* c. Big-step. *)
+                          (* c. Big-step. *)

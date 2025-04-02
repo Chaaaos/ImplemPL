@@ -1,4 +1,5 @@
-(** ML IMPLEMENTATION OF TYPED LAMBDA-CALCULUS **)
+(** ML IMPLEMENTATION OF
+    FINE GRAINED CBV LAMBDA-CALCULUS **)
 (* Based on Chapters 10 and 11 of TAPL. *)
 
 
@@ -84,7 +85,7 @@ let rec type_of_value (ctx : var_ctx) (v : value) : s_ty  =
   | ValInL (vL, tyR) ->
      let tyL =  type_of_value ctx vL in
      TySum (tyL, tyR)
-| ValInR (tyL, vR) ->
+  | ValInR (tyL, vR) ->
      let tyR =  type_of_value ctx vR in
      TySum (tyL, tyR) 
 and type_of_comp (ctx : var_ctx) (t : comp) : s_ty =
@@ -109,14 +110,15 @@ and type_of_comp (ctx : var_ctx) (t : comp) : s_ty =
      | TyProd (ty1, ty2) -> ty2
      | _ -> raise NotAProduct
      end
-  | CompCaseOf (v, ty_vL, tL, ty_vR, tR) ->
+  | CompCaseOf (v, a1, t1, a2, t2) ->
      let ty = type_of_value ctx v in
-     begin if (ty = TySum (ty_vL, ty_vR))
+     begin if (ty = TySum (a1, a2))
            then
-             let ctx' = add_type ty ctx in
-             let tyL = type_of_comp ctx' tL in
-             let tyR = type_of_comp ctx' tR in
-             if (tyL = tyR) then tyL else raise TypeMismatch
+             let ctx1 = add_type a1 ctx in
+             let ctx2 = add_type a2 ctx in
+             let b1 = type_of_comp ctx1 t1 in
+             let b2 = type_of_comp ctx2 t2 in
+             if (b1 = b2) then b1 else raise TypeMismatch
            else raise NotASum
      end
   | CompLet (t1, t2) ->
