@@ -1,0 +1,8 @@
+lib: [
+  "_build/install/default/lib/bindlib_versions/META"
+  "_build/install/default/lib/bindlib_versions/dune-package"
+  "_build/install/default/lib/bindlib_versions/opam"
+]
+bin: [
+  "_build/install/default/bin/bindlib_versions"
+]
