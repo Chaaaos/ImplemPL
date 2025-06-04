@@ -213,7 +213,7 @@ let add_type (te_ty : term var * s_ty) (ctx : var_ctx) = (te_ty :: ctx)
 
 (* Gets the type of a given variable in a given context
    by comparing the id of the variables. *)
-let find_ctx : term var -> var_ctx -> s_ty option = fun x ctx ->
+let find_type : term var -> var_ctx -> s_ty option = fun x ctx ->
 try Some(snd (List.find (fun (y,_) -> eq_vars x y) ctx))
 with Not_found -> None
 
@@ -231,83 +231,103 @@ exception TrySubsumption
 
 
 
-(** Typing function. --TODO *)
+(** Typing function. --WIP *)
+(* Adapting the version from `BidirectionalFGCBV.ml`
+   to use the Bindlib library.*)
 let rec ty_check (ctx : var_ctx) (t : term) (ty : s_ty) : unit =
-  let aux_subs_val (ctx : var_ctx) (t : term) (ty : s_ty) : unit  =
+  let aux_subs (ctx : var_ctx) (t : term) (ty : s_ty) : unit  =
     try
       let ty_syn = ty_synth ctx t in
       assert (ty_syn = ty)
-    with fail -> raise NotChecking in
+    with _ -> raise NotChecking in
   (* Subsumption is a checking rule,
      so when it fails, then it is a checking failure. *)
   
   begin try
       match t, ty with
-      | TmVar (x), _ -> raise TrySubsumption
+      | TmVar _, _ -> raise TrySubsumption
+        
       | TmAbs (tx, f),  TyArr(ty_x, ty_e) ->
          let (x, e) = unbind f in
          if (tx = ty_x)
          then let ctx' = add_type (x, ty_x) ctx in
               (ty_check ctx' e ty_e)
          else raise NotChecking
+      | TmAbs _ , _ -> raise NotChecking
+
+            
       | TmPair (v1, v2), TyProd (ty1, ty2) ->
-         (ty_check_value ctx v1 ty1) ;
-         (ty_check_value ctx v2 ty2)
+         (ty_check ctx v1 ty1) ;
+         (ty_check ctx v2 ty2)       
+      | TmPair _ , _ -> raise NotChecking
+        
       | TmInL (vL, ty_R), TySum (tyL, tyR) ->
          if (ty_R = tyR)
-         then (ty_check_value ctx vL tyL)
-         else raise NotChecking
+         then (ty_check ctx vL tyL)
+         else raise NotChecking 
+      | TmInL _ , _ -> raise NotChecking
+        
       | TmInR (ty_L, vR), TySum (tyL, tyR) ->
          if (ty_L = tyL)
-         then (ty_check_value ctx vR ty)
+         then (ty_check ctx vR tyR)
          else raise NotChecking
-      | TmApp(u, v), _ -> raise TrySubsumption
-      | Tm, _ -> raise TrySubsumption
+      | TmInR _ , _ -> raise NotChecking
+      (* check if ok *)
         
-                      (* change this asap & add missing patterns *)
-    with TrySubsumption -> (aux_subs_val ctx v ty)
-                             (* change with the right exception*)
-  end
+      | TmApp _, _ -> raise TrySubsumption     
+      | TmProj1 _ , _ -> raise TrySubsumption  
+      | TmProj2 _ , _ -> raise TrySubsumption
+      | TmCaseOf _ , _ -> raise TrySubsumption
+      | TmLet _ , _ -> raise TrySubsumption
+        
+    with TrySubsumption -> (aux_subs ctx t ty)                            end
 
 and  ty_synth (ctx : var_ctx) (t : term) : s_ty  =
   match t with
-  | TmUnit -> raise NotSynthetising
-  | TmVar i -> get_type ctx i
-  | TmAbs (ty, t1) -> raise NotSynthetising
-  | TmPair (v1, v2) -> raise NotSynthetising
-  | TmInL (vL, tyR) -> raise NotSynthetising
-  | TmInR (tyL, vR) -> raise NotSynthetising
+  | TmVar x ->
+     begin
+       match (find_type x ctx) with
+       | None -> raise NotSynthetising
+       | Some ty_x -> ty_x
+     end 
+  | TmAbs _ -> raise NotSynthetising
+  | TmPair _ -> raise NotSynthetising
+  | TmInL _ -> raise NotSynthetising
+  | TmInR _ -> raise NotSynthetising
   | TmApp (t1, t2) ->
-     let ty_t1 =  ty_synth_value ctx t1 in
+     let ty_t1 =  ty_synth ctx t1 in
      begin match ty_t1 with
      | TyArr(tyA,tyB) ->
-        (ty_check_value ctx t2 tyA) ; tyB
+        (ty_check ctx t2 tyA) ; tyB
      | _ -> raise NotSynthetising
      end
   | TmProj1 p ->
-     let ty = ty_synth_value ctx v in
+     let ty = ty_synth ctx p in
      begin match ty with
-     | TyProd (ty1, ty2) -> ty1
+     | TyProd (ty1, _) -> ty1
      | _ -> raise NotSynthetising
      end
   | TmProj2 p ->
-     let ty = ty_synth_value ctx v in
+     let ty = ty_synth ctx p in
      begin match ty with
-     | TyProd (ty1, ty2) -> ty2
+     | TyProd (_, ty2) -> ty2
      | _ -> raise NotSynthetising
      end
   | TmCaseOf (v, ty1, e1, ty2, e2) -> (* asymmetric version *)
-     let ty = ty_synth_value ctx v in
-     begin if (ty = TySum (a1, a2))
+     let ty = ty_synth ctx v in
+     begin if (ty = TySum (ty1, ty2))
            then
-             let ctx1 = add_type a1 ctx in
-             let ctx2 = add_type a2 ctx in
-             let b = ty_synth_comp ctx1 t1 in
-             (ty_check_comp ctx2 t2 b) ; b
+             let (x1, f1) = unbind e1 in
+             let (x2, f2) = unbind e2 in
+             let ctx1 = add_type (x1, ty1) ctx in
+             let ctx2 = add_type (x2, ty2) ctx in
+             let b = ty_synth ctx1 f1 in
+             (ty_check ctx2 f2 b) ; b
            else raise NotSynthetising
      end
   | TmLet (m, n) ->
-     let ty_m = ty_synth_comp ctx m in
-     let ctx' = add_type ty_m ctx in
-     (ty_synth_comp ctx' n)
-  | _, _ -> failwith "not yet defined"
+     let ty_m = ty_synth ctx m in
+     let (xn, fn) = unbind n in
+     let ctx' = add_type (xn, ty_m) ctx in
+     (ty_synth ctx' fn)
+(* check if this is ok *)
