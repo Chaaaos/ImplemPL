@@ -1,7 +1,7 @@
 (** BINDLIB IMPLEMENTATION OF LAMBDA-CALCULUS WITH CONSTRUCTORS **)
 (* Based on the paper "Abstract Representation of Binders in OCaml
    using the Bindlib Library" by R. Lepigre and C. Rafalli.*)
-(* Follows closely the example presented in the article for System F. *)
+(* Follows closely "term part" of the example presented in the article for System F. *)
 
 
 
@@ -142,11 +142,11 @@ let rec nf : term -> term = fun t ->
   match t with
   | TmVar(_) ->
      t
-
-  (* /!\ : Binds one term variable. *)
   | TmAbs(ty, f) ->
      let (x,e) = unbind f in
      TmAbs(ty, unbox (bind_var x (lift_te (nf e))))
+
+  (* /!\ : Substitutes one term variable. *)
   | TmApp(t, u) ->
      let u' = nf u in
      begin
@@ -161,13 +161,13 @@ let rec nf : term -> term = fun t ->
      TmPair (t1', t2')
   | TmProj1(p) ->
      begin
-       match p with
+       match nf p with
        | TmPair(t1, _) -> t1
        | p' -> TmProj1(p')
      end
   | TmProj2(p) -> 
      begin
-       match p with
+       match nf p with
        | TmPair(_, t2) -> t2
        | p' -> TmProj2(p')
      end
@@ -179,7 +179,7 @@ let rec nf : term -> term = fun t ->
      let tR' = nf tR in
      TmInR(tyL, tR')
 
-  (* /!\ : Binds two term variables. *)
+  (* /!\ : Substitutes two term variables. *)
   | TmCaseOf (v0, ty1, v1, ty2, v2) ->
      let (x1, e1) = unbind v1 in
      let e1' = nf e1 in
@@ -195,7 +195,7 @@ let rec nf : term -> term = fun t ->
        | v0' -> TmCaseOf (v0', ty1, v1', ty2, v2')
      end
 
-  (* /!\ : Binds one term variable. *)
+  (* /!\ : Substitutes one term variable. *)
   | TmLet (m, n) ->
      let (x, e) = unbind n in
      let e' = nf e in
@@ -247,7 +247,7 @@ exception TrySubsumption
 
 
 
-(** Typing function. --WIP *)
+(** Typing function. *)
 (* Adapting the version from `BidirectionalFGCBV.ml`
    to use the Bindlib library.*)
 let rec ty_check (ctx : var_ctx) (t : term) (ty : s_ty) : unit =
