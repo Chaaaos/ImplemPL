@@ -50,13 +50,13 @@ let box_apply5 : ('a -> 'b -> 'c -> 'd -> 'e -> 'f)
 
 (** Smart constructors. *)
 (* Smart constructors are needed to work under binders,
- which is required to write the normalisation function. *)
+   which is required to write the normalisation function. *)
 
 (* TYPES. *)
 (* Not useful here, they will be later. *)
 (* Base type. *)
 let _TyBool : s_ty box = box TyBool
-  
+
 (* Arrow type. *)
 let _TyArr : s_ty box -> s_ty box -> s_ty box =
   box_apply2 (fun a b -> TyArr(a,b))
@@ -111,7 +111,7 @@ let _TmLet : term box -> (term,term) binder box -> term box =
 
 (** Lifting functions. *)
 (* Needed to define the normalisation function,
- to box subterms after normalising under a binder. *)
+   to box subterms after normalising under a binder. *)
 
 let rec lift_ty : s_ty -> s_ty box = fun a ->
   match a with
@@ -143,14 +143,15 @@ let rec nf : term -> term = fun t ->
   | TmVar(_) ->
      t
 
-  | TmAbs(ty, f) -> (* /!\ : Binds one term variable. *)
-      let (x,e) = unbind f in
-      TmAbs(ty, unbox (bind_var x (lift_te (nf e))))
+  (* /!\ : Binds one term variable. *)
+  | TmAbs(ty, f) ->
+     let (x,e) = unbind f in
+     TmAbs(ty, unbox (bind_var x (lift_te (nf e))))
   | TmApp(t, u) ->
      let u' = nf u in
      begin
        match nf t with
-       | TmAbs(_,f) -> nf (subst f u)
+       | TmAbs(_,f) -> nf (subst f u')
        | t' -> TmApp(t', u')
      end
 
@@ -173,19 +174,34 @@ let rec nf : term -> term = fun t ->
 
   | TmInL(tL, tyR) ->
      let tL' = nf tL in
-       TmInL(tL', tyR)
+     TmInL(tL', tyR)
   | TmInR(tyL, tR) ->
      let tR' = nf tR in
      TmInR(tyL, tR')
 
-  | TmCaseOf(v, ty1, v1, ty2, v2) -> (* /!\ : Binds two term variables. *)
+  (* /!\ : Binds two term variables. *)
+  | TmCaseOf (v0, ty1, v1, ty2, v2) ->
      let (x1, e1) = unbind v1 in
+     let e1' = nf e1 in
+     let v1' = unbox (bind_var x1 (lift_te e1')) in
+     (* this looks too complicated, could it be simpler ? *)
      let (x2, e2) = unbind v2 in
-     TmCaseOf(nf v, ty1, unbox(bind_var x1 (lift_te (nf e1))), ty2,  unbox(bind_var x2 (lift_te (nf e2))))
+     let e2' = nf e2 in
+     let v2' = unbox (bind_var x2 (lift_te e2')) in
+     begin
+       match (nf v0) with
+       | TmInL (v0', _) -> nf (subst v1' v0')
+       | TmInR (_, v0') -> nf (subst v2' v0')
+       | v0' -> TmCaseOf (v0', ty1, v1', ty2, v2')
+     end
 
-  | TmLet(m, n) -> (* /!\ : Binds one term variable. *)
+  (* /!\ : Binds one term variable. *)
+  | TmLet (m, n) ->
      let (x, e) = unbind n in
-     TmLet(nf m, unbox(bind_var x (lift_te (nf e))))
+     let e' = nf e in
+     let n' = unbox (bind_var x (lift_te e')) in
+     let m' = nf m in
+     nf (subst n' m')
 
 
 (** Example of types and terms. --TODO *)
@@ -197,7 +213,7 @@ let rec nf : term -> term = fun t ->
 
 
 
-(** TYPING. --WIP *)
+(** TYPING. *)
 
 
 (** Typing contexts. *)
@@ -208,14 +224,14 @@ type var_ctx = (term var * s_ty) list
 (* formerly: type var_ctx = s_ty list *)
 
 (* Adds the typing information for a new variable
- in head position. *)
+   in head position. *)
 let add_type (te_ty : term var * s_ty) (ctx : var_ctx) = (te_ty :: ctx)
 
 (* Gets the type of a given variable in a given context
    by comparing the id of the variables. *)
 let find_type : term var -> var_ctx -> s_ty option = fun x ctx ->
-try Some(snd (List.find (fun (y,_) -> eq_vars x y) ctx))
-with Not_found -> None
+  try Some(snd (List.find (fun (y,_) -> eq_vars x y) ctx))
+  with Not_found -> None
 
 
 (** Exceptions for typing. *)
@@ -253,7 +269,7 @@ let rec ty_check (ctx : var_ctx) (t : term) (ty : s_ty) : unit =
          (ty_check ctx' e ty_e)
       | TmAbs _ , _ -> raise NotChecking
 
-            
+        
       | TmPair (v1, v2), TyProd (ty1, ty2) ->
          (ty_check ctx v1 ty1) ;
          (ty_check ctx v2 ty2)       
@@ -326,4 +342,4 @@ and  ty_synth (ctx : var_ctx) (t : term) : s_ty  =
      let (xn, fn) = unbind n in
      let ctx' = add_type (xn, ty_m) ctx in
      (ty_synth ctx' fn)
-(* check if this is ok *)
+       (* check if this is ok *)
