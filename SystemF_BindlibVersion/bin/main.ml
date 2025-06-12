@@ -316,14 +316,24 @@ let rec ty_check_val (ctx : var_ctx) (t : value) (ty : s_ty) : unit =
          else raise NotChecking
       | ValAbs _ , _ -> raise NotChecking
 
-      | ValLam f, TyAll ty_bind ->
-         let (a, e) = unbind f in
-         let (v_ty, t_ty) = unbind ty_bind in
-         (* check against type of e -> add the type to the context before ?*)
-         failwith "Not yet defined."
-      | ValSpe _, _ -> failwith "Not yet defined."
-
-        
+      | ValLam f, _ ->
+         let (_, e) = unbind f in
+         begin
+           match ty with
+           | TyAll ty_bind ->
+              let (_, t_ty) = unbind ty_bind in
+              (ty_check_val ctx e t_ty)
+           | _ -> raise NotChecking
+         end
+      | ValSpe (v0, arg_ty), _ ->
+         let ty_v0 = ty_synth_val ctx v0 in
+         begin
+           match ty_v0 with
+           | TyAll f ->
+              let applied_f = subst f arg_ty in
+              assert (applied_f = ty)
+           | _ -> raise NotChecking
+         end       
       | ValPair (v1, v2), TyProd (ty1, ty2) ->
          (ty_check_val ctx v1 ty1) ;
          (ty_check_val ctx v2 ty2)       
