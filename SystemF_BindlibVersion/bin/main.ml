@@ -40,11 +40,11 @@ and comp =
   | CompProj1 of value
   | CompProj2 of value
   | CompCaseOf of value * s_ty * (value, comp) binder * s_ty * (value, comp) binder (* Binds two term variables. *)
-  | CompLet of value * (value, comp) binder (* Binds one term variable. *)
+  | CompBind of comp * (value, comp) binder (* Binds one term variable. *)
   | CompReturn of value
 
 
-(** NORMALISATION. --WIP *)
+(** NORMALISATION. *)
 (** Preliminary definitions for smart constructors. *)
 let box_apply5 : ('a -> 'b -> 'c -> 'd -> 'e -> 'f)
                  -> 'a box -> 'b box -> 'c box -> 'd box -> 'e box
@@ -120,8 +120,8 @@ let _CompCaseOf : value box
   box_apply5 (fun v ty1 v1 ty2 v2 -> CompCaseOf(v, ty1, v1, ty2, v2))
 
 (* Let constructor. *)
-let _CompLet : value box -> (value, comp) binder box -> comp box =
-  box_apply2 (fun a f -> CompLet(a,f))
+let _CompBind : comp box -> (value, comp) binder box -> comp box =
+  box_apply2 (fun a f -> CompBind(a,f))
 (* Return constructor. *)
 let _CompReturn : value box -> comp box =
   box_apply (fun v -> CompReturn(v))
@@ -156,7 +156,7 @@ and lift_comp : comp -> comp box = fun c ->
   | CompCaseOf(v, ty1, v1, ty2, v2) ->
      _CompCaseOf (lift_val v) (lift_ty ty1) (box_binder lift_comp v1) (lift_ty ty2) (box_binder lift_comp v2)
 
-  | CompLet(m, n) -> _CompLet (lift_val m) (box_binder lift_comp n)
+  | CompBind(m, n) -> _CompBind (lift_comp m) (box_binder lift_comp n)
   | CompReturn v -> _CompReturn (lift_val v)
 (* failwith "Not yet defined." *)
 
@@ -167,17 +167,16 @@ exception NotAValue
 exception NoRuleApplies
 
 
-(** Normalisation function. --WIP*)
+(** Normalisation function. *)
 let rec nf_comp : comp -> comp = fun t ->
   match t with
   (* /!\ : Substitutes one term variable. *)
-  | CompApp(t, u) ->
+  | CompApp(ValAbs(_,f), u) ->
      let u' = nf_val u in
-     begin
-       match t with
-       | ValAbs(_,f) -> nf_comp (subst f u')
-       | _ -> CompApp(t, u')
-     end
+     nf_comp (subst f u')
+  | CompApp (t, u) ->
+     let u' = nf_val u in
+     CompApp (t, u')
 
   | CompProj1(p) ->
      begin
@@ -191,29 +190,24 @@ let rec nf_comp : comp -> comp = fun t ->
        | ValPair(_, t2) -> CompReturn t2
        | p' -> CompProj2(p')
      end
+
   (* /!\ : Substitutes two term variables. *)
   | CompCaseOf (v0, ty1, v1, ty2, v2) ->
-     let (x1, e1) = unbind v1 in
-     let e1' = nf_comp e1 in
-     let v1' = unbox (bind_var x1 (lift_comp e1')) in
-     (* this looks too complicated, could it be simpler ? *)
-     let (x2, e2) = unbind v2 in
-     let e2' = nf_comp e2 in
-     let v2' = unbox (bind_var x2 (lift_comp e2')) in
      begin
        match (nf_val v0) with
-       | ValInL (v0', _) -> nf_comp (subst v1' v0')
-       | ValInR (_, v0') -> nf_comp (subst v2' v0')
-       | v0' -> CompCaseOf (v0', ty1, v1', ty2, v2')
+       | ValInL (v0', _) -> nf_comp (subst v1 v0')
+       | ValInR (_, v0') -> nf_comp (subst v2 v0')
+       | v0' -> CompCaseOf (v0', ty1, v1, ty2, v2)
      end
-
   (* /!\ : Substitutes one term variable. *)
-  | CompLet(m, n) ->   
-     let (x, e) = unbind n in
-     let e' = nf_comp e in
-     let n' = unbox (bind_var x (lift_comp e')) in
-     let m' = nf_val m in
-     nf_comp (subst n' m')
+  | CompBind(m, n) ->
+     let m' = nf_comp m in
+     begin
+       match m' with
+       | CompReturn (v) ->
+          nf_comp (subst n v)
+       | CompApp _ | CompProj1 _ | CompProj2 _ | CompCaseOf _ | CompBind _ as e -> CompBind(e, n)   
+     end
 
   | CompReturn v ->
      let v' = nf_val v in
@@ -257,10 +251,10 @@ and nf_val : value -> value = fun v ->
 
 
 
-(** TYPING. --TODO *)
+(** TYPING. *)
 
 
-(** Typing contexts. --WIP *)
+(** Typing contexts. *)
 (* This part is the same as in the System F example, from the Bindlib paper.*)
 
 (* Type of variable typing contexts. *)
@@ -278,7 +272,7 @@ let find_type : value var -> var_ctx -> s_ty option = fun x ctx ->
   with Not_found -> None
 
 
-(** Exceptions for typing. --WIP *)
+(** Exceptions for typing. *)
 (* Exceptions to raise when it is impossible
    to synthetise a type. *)
 exception NotSynthetising
@@ -292,9 +286,11 @@ exception TrySubsumption
 
 
 
-(** Typing function. --WIP *)
-(* Adapting the version from `BidirectionalFGCBV.ml`
-   to use the Bindlib library.*)
+(** Typing function. *)
+(* Adapting the implementation of type checking and synthetising
+   for SystemF from the Bindlib paper to FG-CB
+   + adding new constructors.*)
+
 let rec ty_check_val (ctx : var_ctx) (t : value) (ty : s_ty) : unit =
   let aux_subs (ctx : var_ctx) (t : value) (ty : s_ty) : unit  =
     try
@@ -306,63 +302,47 @@ let rec ty_check_val (ctx : var_ctx) (t : value) (ty : s_ty) : unit =
   
   begin try
       match t, ty with
-      | ValVar _, _ -> raise TrySubsumption
+      | ValVar _, _ ->
+         raise TrySubsumption
         
-      | ValAbs (tx, f),  TyArr(ty_x, ty_e) ->
+      | ValAbs (tx, f),  TyArr(ty_x, ty_e) when (tx = ty_x) ->
          let (x, e) = unbind f in
-         if (tx = ty_x)
-         then let ctx' = add_type (x, ty_x) ctx in
-              (ty_check_comp ctx' e ty_e)
-         else raise NotChecking
-      | ValAbs _ , _ -> raise NotChecking
+         let ctx' = add_type (x, ty_x) ctx in
+         (ty_check_comp ctx' e ty_e)
+      | ValAbs _ , _ ->
+         raise NotChecking
 
-      | ValLam f, _ ->
-         let (_, e) = unbind f in
-         begin
-           match ty with
-           | TyAll ty_bind ->
-              let (_, t_ty) = unbind ty_bind in
-              (ty_check_val ctx e t_ty)
-           | _ -> raise NotChecking
-         end
-      | ValSpe (v0, arg_ty), _ ->
-         let ty_v0 = ty_synth_val ctx v0 in
-         begin
-           match ty_v0 with
-           | TyAll f ->
-              let applied_f = subst f arg_ty in
-              assert (applied_f = ty)
-           | _ -> raise NotChecking
-         end       
+      | ValLam _ , _ ->
+         raise TrySubsumption
+      | ValSpe _ , _ ->
+         raise TrySubsumption
+        
       | ValPair (v1, v2), TyProd (ty1, ty2) ->
          (ty_check_val ctx v1 ty1) ;
          (ty_check_val ctx v2 ty2)       
       | ValPair _ , _ -> raise NotChecking
         
-      | ValInL (vL, ty_R), TySum (tyL, tyR) ->
-         if (ty_R = tyR)
-         then (ty_check_val ctx vL tyL)
-         else raise NotChecking 
+      | ValInL (vL, ty_R), TySum (tyL, tyR) when (ty_R = tyR) ->
+         (ty_check_val ctx vL tyL)
       | ValInL _ , _ -> raise NotChecking
         
-      | ValInR (ty_L, vR), TySum (tyL, tyR) ->
-         if (ty_L = tyL)
-         then (ty_check_val ctx vR tyR)
-         else raise NotChecking
+      | ValInR (ty_L, vR), TySum (tyL, tyR) when (ty_L = tyL) ->
+         (ty_check_val ctx vR tyR)
       | ValInR _ , _ -> raise NotChecking
-                              (* check if ok *)
+        
     with TrySubsumption -> (aux_subs ctx t ty)                            end
-and ty_check_comp (ctx : var_ctx) (t : comp) (ty : s_ty) : unit =     
+and ty_check_comp (ctx : var_ctx) (t : comp) (ty : s_ty) : unit =    
   let aux_subs_comp (ctx : var_ctx) (t : comp) (ty : s_ty) : unit  =
     try
       let ty_syn = ty_synth_comp ctx t in
       assert (ty_syn = ty)
     with _ -> raise NotChecking in
+  
   try
     match t, ty with
     | CompReturn v, ty -> ty_check_val ctx v ty
-    | _, _ -> raise TrySubsumption
-                    (* replace with missing patterns *)
+    | CompApp _, _ | CompProj1 _, _ | CompProj2 _, _ | CompCaseOf _, _ | CompBind _ , _ -> raise TrySubsumption
+
   with TrySubsumption -> (aux_subs_comp ctx t ty)
 
 and  ty_synth_val (ctx : var_ctx) (t : value) : s_ty  =
@@ -374,13 +354,26 @@ and  ty_synth_val (ctx : var_ctx) (t : value) : s_ty  =
        | Some ty_x -> ty_x
      end 
   | ValAbs _ -> raise NotSynthetising
-  | ValLam _ -> failwith "Not yet defined."
-  | ValSpe _ -> failwith "Not yet defined."
 
+  | ValLam f ->
+     let (a, e) = unbind f in
+     let ty_e = ty_synth_val ctx e in
+     let ty_bind = unbox (bind_var a (lift_ty ty_e)) in
+     (* is there a way to avoid lifting, and
+        then immediately unboxing here ?*)
+     TyAll (ty_bind)
+  | ValSpe (v0, arg_ty) ->
+     let ty_v0 = ty_synth_val ctx v0 in
+     begin
+       match ty_v0 with
+       | TyAll f -> subst f arg_ty
+       | _ -> raise NotSynthetising
+     end
 
   | ValPair _ -> raise NotSynthetising
   | ValInL _ -> raise NotSynthetising
   | ValInR _ -> raise NotSynthetising
+
 and  ty_synth_comp (ctx : var_ctx) (t : comp) : s_ty  =
   match t with
   | CompApp (t1, t2) ->
@@ -414,11 +407,10 @@ and  ty_synth_comp (ctx : var_ctx) (t : comp) : s_ty  =
              (ty_check_comp ctx2 f2 b) ; b
            else raise NotSynthetising
      end
-  | CompLet (m, n) ->
-     let ty_m = ty_synth_val ctx m in
+  | CompBind (m, n) ->
+     let ty_m = ty_synth_comp ctx m in
      let (xn, fn) = unbind n in
      let ctx' = add_type (xn, ty_m) ctx in
      (ty_synth_comp ctx' fn)
   | CompReturn v ->
      (ty_synth_val ctx v)
-       (* check if this is ok *)
