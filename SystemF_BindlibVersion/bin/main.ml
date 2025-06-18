@@ -225,10 +225,13 @@ and nf_val : value -> value = fun v ->
      let (a, e) = unbind f in
      let e' = lift_val (nf_val e) in
      ValLam (unbox (bind_var a e'))
-  (* ValSpe is a value so there is no substitution involved, right ? *)
   | ValSpe (f, a) ->
      let f' = nf_val f in
-     ValSpe (f', a)
+     begin
+       match f' with
+       | ValLam e -> nf_val (subst e a)
+       | ValVar _ | ValAbs _ | ValSpe _ | ValPair _ | ValInL _ | ValInR _ -> ValSpe (f', a)
+    end
 
   | ValPair (t1, t2) -> 
      let t1' = nf_val t1 in
